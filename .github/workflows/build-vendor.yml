@@ -1,0 +1,210 @@
+# GitHub Actions workflow for Green3785/vectra-api-vendor
+# 构建完整的 API vendor 依赖包（node_modules + libvirt 预编译）
+#
+# 使用方式：
+#   1. 创建仓库 Green3785/vectra-api-vendor
+#   2. 将此文件放置到 .github/workflows/build-vendor.yml
+#   3. 仓库根目录需要包含：
+#      - api/package.json （从 Vectra/api/api/package.json 复制）
+#      - api/pnpm-lock.yaml （从 Vectra/api/pnpm-lock.yaml 复制）
+#      - packages/vectra-shared/ （从 Vectra/api/packages/vectra-shared/ 复制 dist + package.json）
+#      - packages/vectra-api-plugin-community-apps-security/ （同上）
+#      - libvirt/ （从 Vectra/api/libvirt/ 复制 dist + package.json，不含 src/build/node_modules）
+#      - pnpm-workspace.yaml
+#
+# 产出：node_modules-for-v{version}.tar.xz（GitHub Release asset）
+# 包含所有运行时依赖 + libvirt.node 预编译二进制
+
+name: Build Vendor Archive
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      api_version:
+        description: 'API version (e.g. 4.30.0)'
+        required: true
+      libvirt_version:
+        description: 'Libvirt prebuilt version tag (e.g. v2.2.1-custom.1)'
+        required: true
+        default: 'v2.2.1-custom.1'
+
+env:
+  NODE_VERSION: '22.18.0'
+  PNPM_VERSION: '10.15.0'
+  LIBVIRT_REPO: 'Green3785/libvirt'
+  # tag 触发时从 tag 名提取版本；手动触发时使用输入值
+  LIBVIRT_TAG: ${{ github.event.inputs.libvirt_version || 'v2.2.1-custom.1' }}
+
+jobs:
+  build-vendor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 用于创建 Release
+
+    steps:
+      # ── 1. 检出仓库 ──
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. 设置 Node.js + pnpm ──
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      # ── 3. 解析版本号 ──
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.api_version }}"
+          else
+            # 从 tag 名提取: v4.30.0 -> 4.30.0
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "archive_name=node_modules-for-v${VERSION}.tar.xz" >> "$GITHUB_OUTPUT"
+          echo "Building vendor archive for API v${VERSION}"
+
+      # ── 4. 安装系统依赖 ──
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xz-utils
+
+      # ── 5. 安装生产依赖 ──
+      - name: Install production dependencies
+        run: |
+          cd api
+          pnpm install --prod --frozen-lockfile
+        env:
+          # 跳过 libvirt native 编译，后面直接用预编译件替换
+          npm_config_ignore_scripts: true
+
+      # ── 6. 处理 workspace 包 ──
+      # pnpm workspace 链接是 symlink，需要解析为实际文件
+      - name: Resolve workspace symlinks
+        run: |
+          cd api/node_modules
+
+          # @vectra/shared
+          if [ -L "@vectra/shared" ]; then
+            REAL_PATH=$(readlink -f "@vectra/shared")
+            rm "@vectra/shared"
+            cp -rL "$REAL_PATH" "@vectra/shared"
+            echo "Resolved @vectra/shared symlink"
+          fi
+
+          # @vectra/libvirt
+          if [ -L "@vectra/libvirt" ]; then
+            REAL_PATH=$(readlink -f "@vectra/libvirt")
+            rm "@vectra/libvirt"
+            cp -rL "$REAL_PATH" "@vectra/libvirt"
+            echo "Resolved @vectra/libvirt symlink"
+          fi
+
+          # vectra-api-plugin-community-apps-security (optional peer dep)
+          if [ -L "vectra-api-plugin-community-apps-security" ]; then
+            REAL_PATH=$(readlink -f "vectra-api-plugin-community-apps-security")
+            rm "vectra-api-plugin-community-apps-security"
+            cp -rL "$REAL_PATH" "vectra-api-plugin-community-apps-security"
+            echo "Resolved vectra-api-plugin-community-apps-security symlink"
+          fi
+
+          echo "Workspace symlinks resolved."
+
+      # ── 7. 下载 libvirt 预编译二进制 ──
+      - name: Download libvirt prebuilt binary
+        run: |
+          LIBVIRT_DIR="api/node_modules/@vectra/libvirt/build/Release"
+          mkdir -p "$LIBVIRT_DIR"
+
+          DOWNLOAD_URL="https://github.com/${{ env.LIBVIRT_REPO }}/releases/download/${{ env.LIBVIRT_TAG }}/libvirt-${LIBVIRT_TAG#v}-node-v127-linux-x64.tar.gz"
+
+          echo "Downloading libvirt from: $DOWNLOAD_URL"
+          curl -fSL "$DOWNLOAD_URL" -o /tmp/libvirt-prebuilt.tar.gz
+
+          # 解压到 @vectra/libvirt 目录
+          tar -xzf /tmp/libvirt-prebuilt.tar.gz -C "api/node_modules/@vectra/libvirt/"
+          rm /tmp/libvirt-prebuilt.tar.gz
+
+          # 验证
+          if [ ! -f "$LIBVIRT_DIR/libvirt.node" ]; then
+            echo "Error: libvirt.node not found after extraction"
+            exit 1
+          fi
+
+          ls -la "$LIBVIRT_DIR/libvirt.node"
+          echo "libvirt.node installed successfully"
+        env:
+          LIBVIRT_TAG: ${{ env.LIBVIRT_TAG }}
+
+      # ── 8. 清理不需要的文件（减小体积）──
+      - name: Clean unnecessary files
+        run: |
+          cd api/node_modules
+
+          # 删除 TypeScript 源码、测试、文档等
+          find . -type d -name "__tests__" -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "test" -not -path "*/node_modules/test" -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name ".github" -exec rm -rf {} + 2>/dev/null || true
+          find . -type f -name "*.ts" -not -name "*.d.ts" -delete 2>/dev/null || true
+          find . -type f -name "*.map" -delete 2>/dev/null || true
+          find . -type f -name "*.md" -not -name "LICENSE*" -delete 2>/dev/null || true
+          find . -type f -name "CHANGELOG*" -delete 2>/dev/null || true
+          find . -type f -name ".eslint*" -delete 2>/dev/null || true
+          find . -type f -name ".prettier*" -delete 2>/dev/null || true
+          find . -type f -name "tsconfig*.json" -delete 2>/dev/null || true
+
+          echo "Cleanup complete"
+
+      # ── 9. 打包 ──
+      - name: Create vendor archive
+        run: |
+          ARCHIVE="${{ steps.version.outputs.archive_name }}"
+          cd api
+          XZ_OPT='-5 -T0' tar -cJf "../${ARCHIVE}" node_modules
+          cd ..
+          ls -lh "$ARCHIVE"
+          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+          cat "${ARCHIVE}.sha256"
+
+      # ── 10. 创建 GitHub Release ──
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', steps.version.outputs.version) || github.ref_name }}
+          name: "Vendor Archive v${{ steps.version.outputs.version }}"
+          body: |
+            ## Vendor Dependencies for Vectra API v${{ steps.version.outputs.version }}
+
+            **Node.js**: ${{ env.NODE_VERSION }} (ABI 127)
+            **Platform**: linux-x64
+            **libvirt**: ${{ env.LIBVIRT_TAG }}
+
+            ### 包含内容
+            - 所有运行时 npm 依赖（production only）
+            - `@vectra/shared` workspace 包（已解析）
+            - `@vectra/libvirt` 预编译 native addon（node-v127-linux-x64）
+            - 已清理测试/文档/sourcemap 等非必要文件
+
+            ### 使用方式
+            ```bash
+            # 下载并解压到 /usr/local/vectra-api/
+            tar -xJf ${{ steps.version.outputs.archive_name }} -C /usr/local/vectra-api/
+            ```
+          files: |
+            ${{ steps.version.outputs.archive_name }}
+            ${{ steps.version.outputs.archive_name }}.sha256
+          draft: false
+          prerelease: false

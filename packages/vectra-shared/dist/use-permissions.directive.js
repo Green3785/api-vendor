@@ -1,0 +1,126 @@
+import { Directive } from '@nestjs/graphql';
+import { getDirective, MapperKind, mapSchema } from '@graphql-tools/utils';
+import { DirectiveLocation, GraphQLDirective, GraphQLString, } from 'graphql';
+import { UsePermissions as NestAuthzUsePermissions } from 'nest-authz';
+// Import from graphql-enums.js to avoid NestJS dependencies
+import { AuthAction, Resource } from './graphql-enums.js';
+// Re-export the types for convenience
+export { AuthAction, Resource };
+/**
+ * GraphQL Directive Definition for @usePermissions
+ *
+ * IMPORTANT: GraphQL directives MUST use scalar types (String, Int, Boolean) for their arguments
+ * according to the GraphQL specification. This is why action and resource are defined as GraphQLString
+ * even though we use enum types in TypeScript.
+ *
+ * Type safety is enforced at:
+ * 1. Compile-time: TypeScript decorator requires AuthAction and Resource enum types
+ * 2. Runtime: The decorator validates that string values match valid enum values
+ *
+ * The generated schema will show:
+ *   directive @usePermissions(action: String, resource: String) on FIELD_DEFINITION
+ *
+ * But the actual usage in code requires proper enum types for type safety.
+ */
+export const UsePermissionsDirective = new GraphQLDirective({
+    name: 'usePermissions',
+    description: 'Directive to document required permissions for fields',
+    locations: [DirectiveLocation.FIELD_DEFINITION],
+    args: {
+        action: {
+            type: GraphQLString,
+            description: 'The action required for access (must be a valid AuthAction enum value)',
+        },
+        resource: {
+            type: GraphQLString,
+            description: 'The resource required for access (must be a valid Resource enum value)',
+        },
+    },
+});
+/**
+ * UsePermissions Decorator
+ *
+ * Applies permission-based authorization to GraphQL resolvers and adds schema documentation.
+ *
+ * @example
+ * ```typescript
+ * @Query(() => [User])
+ * @UsePermissions({
+ *     action: AuthAction.READ_ANY,
+ *     resource: Resource.USERS
+ * })
+ * async getUsers() { ... }
+ * ```
+ *
+ * The decorator:
+ * 1. Enforces TypeScript type safety with enum types
+ * 2. Validates enum values at runtime
+ * 3. Applies nest-authz authorization checks
+ * 4. Adds @usePermissions directive to GraphQL schema
+ *
+ * Note: While the GraphQL schema shows String types for the directive,
+ * TypeScript ensures only valid enum values can be used.
+ */
+export function UsePermissions(permissions) {
+    return (target, propertyKey, descriptor) => {
+        const finalAction = permissions.action;
+        const finalResource = permissions.resource;
+        // Runtime validation as a safety check
+        if (!Object.values(AuthAction).includes(finalAction)) {
+            throw new Error(`Invalid AuthAction enum value: ${finalAction}. Must be one of: ${Object.values(AuthAction).join(', ')}`);
+        }
+        if (!Object.values(Resource).includes(finalResource)) {
+            throw new Error(`Invalid Resource enum value: ${finalResource}. Must be one of: ${Object.values(Resource).join(', ')}`);
+        }
+        // Escape values for safe SDL injection
+        const escapeForSDL = (value) => {
+            // Validate that the value only contains expected characters
+            // Allow letters, digits, underscores, colons, and hyphens (for actions like "READ_ANY", plugin-style values)
+            const allowedPattern = /^[A-Za-z0-9_:-]+$/;
+            if (!allowedPattern.test(value)) {
+                throw new Error(`Invalid characters in permission value: "${value}". Only letters, digits, underscores, colons, and hyphens are allowed.`);
+            }
+            // Escape special characters for GraphQL string literals
+            return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        };
+        const escapedAction = escapeForSDL(finalAction);
+        const escapedResource = escapeForSDL(finalResource);
+        // Apply UsePermissions for actual authorization
+        NestAuthzUsePermissions({ action: finalAction, resource: finalResource })(target, propertyKey, descriptor);
+        // Apply GraphQL directive using NestJS's @Directive decorator with escaped values
+        Directive(`@usePermissions(action: "${escapedAction}", resource: "${escapedResource}")`)(target, propertyKey, descriptor);
+        return descriptor;
+    };
+}
+;
+// Schema transformer to add permission documentation
+export function usePermissionsSchemaTransformer(schema) {
+    return mapSchema(schema, {
+        [MapperKind.OBJECT_FIELD]: (fieldConfig, fieldName, typeName) => {
+            const usePermissionsDirective = getDirective(schema, fieldConfig, 'usePermissions')?.[0];
+            if (usePermissionsDirective) {
+                const { action: actionValue, resource: resourceValue, } = usePermissionsDirective;
+                if (!actionValue || !resourceValue) {
+                    console.warn(`UsePermissions directive on ${typeName}.${fieldName} is missing required arguments.`);
+                    return fieldConfig;
+                }
+                // Append permission information to the field description
+                const permissionDoc = `
+#### Required Permissions:
+
+- Action: **${actionValue}**
+- Resource: **${resourceValue}**`;
+                const descriptionDoc = fieldConfig.description
+                    ? `
+
+#### Description:
+
+${fieldConfig.description}`
+                    : '';
+                fieldConfig.description = permissionDoc + descriptionDoc;
+            }
+            return fieldConfig;
+        },
+    });
+}
+//# sourceMappingURL=use-permissions.directive.js.map

@@ -1,0 +1,33 @@
+{
+  "name": "vectra-api-plugin-community-apps-security",
+  "version": "4.29.2",
+  "main": "dist/index.js",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "unraid",
+    "community-apps",
+    "security",
+    "unraid plugin"
+  ],
+  "author": "Lime Technology, Inc. <unraid.net>",
+  "license": "GPL-2.0-or-later",
+  "description": "Community Apps security/risk-control helper plugin for Vectra API",
+  "devDependencies": {
+    "@nestjs/common": "11.1.6",
+    "@nestjs/core": "11.1.6",
+    "@nestjs/graphql": "13.1.0",
+    "typescript": "5.9.2"
+  },
+  "peerDependencies": {
+    "@nestjs/common": "11.1.6",
+    "@nestjs/core": "11.1.6",
+    "@nestjs/graphql": "13.1.0"
+  }
+}

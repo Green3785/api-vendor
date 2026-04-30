@@ -1,0 +1,125 @@
+{
+  "name": "@vectra/libvirt",
+  "version": "2.1.0",
+  "description": "Libvirt bindings for Node.js® - forked from vmngr/libvirt",
+  "main": "./dist/index.js",
+  "types": "./dist/types/index.d.ts",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "gypfile": true,
+  "binary": {
+    "module_name": "libvirt",
+    "module_path": "build/Release",
+    "host": "https://github.com/unraid/libvirt/releases/download/",
+    "remote_path": "v{version}",
+    "package_name": "{module_name}-v{version}-{node_abi}-{platform}-{arch}.tar.gz",
+    "target": ">=14.0.0",
+    "target_platform": [
+      "linux",
+      "darwin"
+    ],
+    "target_arch": [
+      "x64",
+      "arm64"
+    ],
+    "runtime": "node"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "binding.gyp",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+http://192.168.1.204:3000/root/vectra-backend.git"
+  },
+  "keywords": [
+    "libvirt",
+    "lxc",
+    "openvz",
+    "qemu",
+    "virtualbox",
+    "vmware",
+    "esx",
+    "esxi",
+    "xen",
+    "hyperv",
+    "powervm",
+    "virtuozzo",
+    "bhyve"
+  ],
+  "author": "Vectra Community (vendored from Unraid Team; original author Leon Rinkel <leon@rinkel.me>)",
+  "license": "MIT",
+  "bugs": {
+    "url": "http://192.168.1.204:3000/root/vectra-backend/issues"
+  },
+  "homepage": "http://192.168.1.204:3000/root/vectra-backend",
+  "dependencies": {
+    "bindings": "^1.5.0",
+    "node-addon-api": "^8.3.0",
+    "tsx": "^4.19.2",
+    "xml2js": "^0.6.2",
+    "@mapbox/node-pre-gyp": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/bindings": "^1.5.5",
+    "@types/chai": "^5.0.1",
+    "@types/node": "^22.13.4",
+    "@types/xml2js": "^0.4.14",
+    "@typescript-eslint/eslint-plugin": "^8.24.0",
+    "@typescript-eslint/parser": "^8.24.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "@vitest/ui": "^3.0.0",
+    "chai": "^5.2.0",
+    "chalk": "^5.4.1",
+    "detect-libc": "^2.0.3",
+    "eslint": "^9.20.1",
+    "eslint-config-xo": "^0.46.0",
+    "eslint-config-xo-typescript": "^7.0.0",
+    "eslint-plugin-unicorn": "^58.0.0",
+    "gts": "^6.0.2",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.3.6",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.0"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "system_requirements": {
+    "libvirt": ">=6.0.0",
+    "qemu": ">=5.0.0"
+  },
+  "scripts": {
+    "clean": "rimraf dist build",
+    "build": "pnpm build/validate && pnpm build/native && pnpm build/ts",
+    "build/validate": "node scripts/validate-platform.js",
+    "build/native": "node-gyp rebuild",
+    "build/ts": "tsc --build --verbose",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
+    "test:package": "rimraf /tmp/libvirt && mkdir /tmp/libvirt && cp -r dist package.json README.md LICENSE binding.gyp src /tmp/libvirt/ && cd /tmp/libvirt && pnpm install",
+    "examples/list": "node examples/list.js",
+    "examples/start": "node examples/start.js",
+    "examples/shutdown": "node examples/shutdown.js",
+    "examples/builder": "node examples/builder.js",
+    "install": "node-pre-gyp install --fallback-to-build"
+  }
+}
