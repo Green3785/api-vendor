@@ -1,19 +1,10 @@
-# GitHub Actions workflow for Green3785/vectra-api-vendor
+# GitHub Actions workflow for Green3785/api-vendor
 # 构建完整的 API vendor 依赖包（node_modules + libvirt 预编译）
 #
-# 使用方式：
-#   1. 创建仓库 Green3785/vectra-api-vendor
-#   2. 将此文件放置到 .github/workflows/build-vendor.yml
-#   3. 仓库根目录需要包含：
-#      - api/package.json （从 Vectra/api/api/package.json 复制）
-#      - packages/vectra-shared/ （从 Vectra/api/packages/vectra-shared/ 复制 dist + package.json）
-#      - packages/vectra-api-plugin-community-apps-security/ （同上）
-#      - libvirt/ （从 Vectra/api/libvirt/ 复制 dist + package.json，不含 src/build/node_modules）
-#      - pnpm-workspace.yaml
-#      - .npmrc （node-linker=hoisted）
+# 使用 pnpm deploy --prod --legacy 从 workspace 中提取 api 包的
+# 完整生产依赖，生成无 symlink 的 flat node_modules。
 #
 # 产出：node_modules-for-v{version}.tar.xz（GitHub Release asset）
-# 包含所有运行时依赖 + libvirt.node 预编译二进制
 
 name: Build Vendor Archive
 
@@ -49,11 +40,9 @@ jobs:
       contents: write
 
     steps:
-      # ── 1. 检出仓库 ──
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── 2. 设置 Node.js + pnpm ──
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -65,7 +54,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
 
-      # ── 3. 解析版本号 ──
       - name: Determine version
         id: version
         run: |
@@ -78,69 +66,71 @@ jobs:
           echo "archive_name=node_modules-for-v${VERSION}.tar.xz" >> "$GITHUB_OUTPUT"
           echo "Building vendor archive for API v${VERSION}"
 
-      # ── 4. 安装系统依赖 ──
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y xz-utils
 
-      # ── 5. 安装生产依赖 ──
-      # .npmrc 中 node-linker=hoisted + shamefully-hoist=true
-      # 所有依赖 flat 提升到根级 node_modules/（无 symlink、无 .pnpm store）
-      - name: Install production dependencies
-        run: |
-          pnpm install --prod
+      # ── 核心步骤：pnpm install + deploy ──
+      # 1. 先完整 install（含 workspace 内部依赖解析）
+      # 2. 再用 pnpm deploy 将 api 包的生产依赖提取到独立目录
+      - name: Install all dependencies
+        run: pnpm install
         env:
           npm_config_ignore_scripts: true
 
-      # ── 6. 验证关键包 ──
+      - name: Deploy API package (extract production deps)
+        run: |
+          pnpm deploy --filter @vectra/api --prod --legacy deploy_output
+          echo "Deploy output contents:"
+          ls deploy_output/
+          echo "---"
+          echo "node_modules package count: $(ls deploy_output/node_modules/ | wc -l)"
+
+      # ── 验证关键包 ──
       - name: Verify key packages
         run: |
-          echo "Checking packages in node_modules/..."
-          for pkg in "@vectra/shared" "@vectra/libvirt" "reflect-metadata" "rxjs" "fastify" "@nestjs/core" "nest-commander"; do
+          cd deploy_output
+          MISSING=0
+          for pkg in "@vectra/shared" "@vectra/libvirt" "reflect-metadata" "rxjs" "fastify" "@nestjs/core" "nest-commander" "class-validator" "class-transformer" "casbin"; do
             if [ -d "node_modules/$pkg" ]; then
-              if [ -L "node_modules/$pkg" ]; then
-                echo "SYMLINK (resolving): $pkg"
-                REAL_PATH=$(readlink -f "node_modules/$pkg")
-                rm "node_modules/$pkg"
-                cp -rL "$REAL_PATH" "node_modules/$pkg"
-              else
-                echo "OK: $pkg"
-              fi
+              echo "OK: $pkg"
             else
               echo "MISSING: $pkg"
-              exit 1
+              MISSING=1
             fi
           done
+          if [ "$MISSING" -eq 1 ]; then
+            echo "Some packages are missing!"
+            echo "Available packages:"
+            ls node_modules/ | head -50
+            exit 1
+          fi
           echo "All key packages verified."
-          echo "Total packages: $(ls node_modules/ | wc -l)"
 
-      # ── 7. 下载 libvirt 预编译二进制 ──
+      # ── 下载 libvirt 预编译二进制 ──
       - name: Download libvirt prebuilt binary
         run: |
-          LIBVIRT_DIR="node_modules/@vectra/libvirt/build/Release"
+          LIBVIRT_DIR="deploy_output/node_modules/@vectra/libvirt/build/Release"
           mkdir -p "$LIBVIRT_DIR"
 
           DOWNLOAD_URL="https://github.com/${{ env.LIBVIRT_REPO }}/releases/download/${{ env.LIBVIRT_TAG }}/${{ env.LIBVIRT_FILENAME }}"
-
           echo "Downloading libvirt from: $DOWNLOAD_URL"
           curl -fSL "$DOWNLOAD_URL" -o /tmp/libvirt-prebuilt.tar.gz
-
-          tar -xzf /tmp/libvirt-prebuilt.tar.gz -C "node_modules/@vectra/libvirt/"
+          tar -xzf /tmp/libvirt-prebuilt.tar.gz -C "deploy_output/node_modules/@vectra/libvirt/"
           rm /tmp/libvirt-prebuilt.tar.gz
 
           if [ ! -f "$LIBVIRT_DIR/libvirt.node" ]; then
             echo "Error: libvirt.node not found after extraction"
             exit 1
           fi
-
           ls -la "$LIBVIRT_DIR/libvirt.node"
           echo "libvirt.node installed successfully"
 
-      # ── 8. 清理不需要的文件（减小体积）──
+      # ── 清理非必要文件 ──
       - name: Clean unnecessary files
         run: |
-          cd node_modules
+          cd deploy_output/node_modules
 
           find . -type d -name "__tests__" -exec rm -rf {} + 2>/dev/null || true
           find . -type d -name "test" -not -path "*/node_modules/test" -exec rm -rf {} + 2>/dev/null || true
@@ -157,17 +147,19 @@ jobs:
           echo "Cleanup complete"
           du -sh .
 
-      # ── 9. 打包 ──
-      # 从根级 node_modules/ 打包，部署时解压到 /usr/local/vectra-api/
+      # ── 打包 ──
+      # 只打包 node_modules 目录，部署时解压到 /usr/local/vectra-api/
       - name: Create vendor archive
         run: |
           ARCHIVE="${{ steps.version.outputs.archive_name }}"
-          XZ_OPT='-5 -T0' tar -cJf "${ARCHIVE}" node_modules
+          cd deploy_output
+          XZ_OPT='-5 -T0' tar -cJf "../${ARCHIVE}" node_modules
+          cd ..
           ls -lh "$ARCHIVE"
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
           cat "${ARCHIVE}.sha256"
 
-      # ── 10. 创建 GitHub Release ──
+      # ── 创建 Release ──
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -181,7 +173,7 @@ jobs:
             **libvirt**: ${{ env.LIBVIRT_TAG }}
 
             ### 包含内容
-            - 所有运行时 npm 依赖（production only, hoisted flat）
+            - 所有运行时 npm 依赖（production only, flat, no symlinks）
             - `@vectra/shared` workspace 包
             - `@vectra/libvirt` 预编译 native addon（node-v127-linux-x64）
             - 已清理测试/文档/sourcemap 等非必要文件
