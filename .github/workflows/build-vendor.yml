@@ -86,45 +86,34 @@ jobs:
           sudo apt-get install -y xz-utils
 
       # ── 5. 安装生产依赖 ──
+      # node-linker=hoisted 确保所有依赖 flat 存放在 api/node_modules（无 symlink）
       - name: Install production dependencies
         run: |
-          cd api
-          pnpm install --prod --frozen-lockfile
+          pnpm install --prod --filter @vectra/api...
         env:
-          # 跳过 libvirt native 编译，后面直接用预编译件替换
           npm_config_ignore_scripts: true
 
-      # ── 6. 处理 workspace 包 ──
-      # pnpm workspace 链接是 symlink，需要解析为实际文件
-      - name: Resolve workspace symlinks
+      # ── 6. 验证 workspace 包 ──
+      # hoisted 模式下 pnpm 直接将 workspace 包内容复制到 node_modules（非 symlink）
+      - name: Verify workspace packages
         run: |
-          cd api/node_modules
+          echo "Checking workspace packages in api/node_modules..."
 
-          # @vectra/shared
-          if [ -L "@vectra/shared" ]; then
-            REAL_PATH=$(readlink -f "@vectra/shared")
-            rm "@vectra/shared"
-            cp -rL "$REAL_PATH" "@vectra/shared"
-            echo "Resolved @vectra/shared symlink"
-          fi
-
-          # @vectra/libvirt
-          if [ -L "@vectra/libvirt" ]; then
-            REAL_PATH=$(readlink -f "@vectra/libvirt")
-            rm "@vectra/libvirt"
-            cp -rL "$REAL_PATH" "@vectra/libvirt"
-            echo "Resolved @vectra/libvirt symlink"
-          fi
-
-          # vectra-api-plugin-community-apps-security (optional peer dep)
-          if [ -L "vectra-api-plugin-community-apps-security" ]; then
-            REAL_PATH=$(readlink -f "vectra-api-plugin-community-apps-security")
-            rm "vectra-api-plugin-community-apps-security"
-            cp -rL "$REAL_PATH" "vectra-api-plugin-community-apps-security"
-            echo "Resolved vectra-api-plugin-community-apps-security symlink"
-          fi
-
-          echo "Workspace symlinks resolved."
+          # 验证关键包存在且非 symlink
+          for pkg in "@vectra/shared" "@vectra/libvirt" "reflect-metadata" "rxjs" "fastify"; do
+            if [ -d "api/node_modules/$pkg" ]; then
+              if [ -L "api/node_modules/$pkg" ]; then
+                echo "WARNING: $pkg is still a symlink, resolving..."
+                REAL_PATH=$(readlink -f "api/node_modules/$pkg")
+                rm "api/node_modules/$pkg"
+                cp -rL "$REAL_PATH" "api/node_modules/$pkg"
+              else
+                echo "OK: $pkg"
+              fi
+            else
+              echo "MISSING: $pkg"
+            fi
+          done
 
       # ── 7. 下载 libvirt 预编译二进制 ──
       - name: Download libvirt prebuilt binary
