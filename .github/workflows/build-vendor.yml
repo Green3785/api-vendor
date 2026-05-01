@@ -6,11 +6,11 @@
 #   2. 将此文件放置到 .github/workflows/build-vendor.yml
 #   3. 仓库根目录需要包含：
 #      - api/package.json （从 Vectra/api/api/package.json 复制）
-#      - api/pnpm-lock.yaml （从 Vectra/api/pnpm-lock.yaml 复制）
 #      - packages/vectra-shared/ （从 Vectra/api/packages/vectra-shared/ 复制 dist + package.json）
 #      - packages/vectra-api-plugin-community-apps-security/ （同上）
 #      - libvirt/ （从 Vectra/api/libvirt/ 复制 dist + package.json，不含 src/build/node_modules）
 #      - pnpm-workspace.yaml
+#      - .npmrc （node-linker=hoisted）
 #
 # 产出：node_modules-for-v{version}.tar.xz（GitHub Release asset）
 # 包含所有运行时依赖 + libvirt.node 预编译二进制
@@ -46,7 +46,7 @@ jobs:
   build-vendor:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 用于创建 Release
+      contents: write
 
     steps:
       # ── 1. 检出仓库 ──
@@ -72,7 +72,6 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ github.event.inputs.api_version }}"
           else
-            # 从 tag 名提取: v4.30.0 -> 4.30.0
             VERSION="${GITHUB_REF_NAME#v}"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -86,39 +85,40 @@ jobs:
           sudo apt-get install -y xz-utils
 
       # ── 5. 安装生产依赖 ──
-      # node-linker=hoisted 确保所有依赖 flat 存放在 api/node_modules（无 symlink）
+      # .npmrc 中 node-linker=hoisted + shamefully-hoist=true
+      # 所有依赖 flat 提升到根级 node_modules/（无 symlink、无 .pnpm store）
       - name: Install production dependencies
         run: |
-          pnpm install --prod --filter @vectra/api...
+          pnpm install --prod
         env:
           npm_config_ignore_scripts: true
 
-      # ── 6. 验证 workspace 包 ──
-      # hoisted 模式下 pnpm 直接将 workspace 包内容复制到 node_modules（非 symlink）
-      - name: Verify workspace packages
+      # ── 6. 验证关键包 ──
+      - name: Verify key packages
         run: |
-          echo "Checking workspace packages in api/node_modules..."
-
-          # 验证关键包存在且非 symlink
-          for pkg in "@vectra/shared" "@vectra/libvirt" "reflect-metadata" "rxjs" "fastify"; do
-            if [ -d "api/node_modules/$pkg" ]; then
-              if [ -L "api/node_modules/$pkg" ]; then
-                echo "WARNING: $pkg is still a symlink, resolving..."
-                REAL_PATH=$(readlink -f "api/node_modules/$pkg")
-                rm "api/node_modules/$pkg"
-                cp -rL "$REAL_PATH" "api/node_modules/$pkg"
+          echo "Checking packages in node_modules/..."
+          for pkg in "@vectra/shared" "@vectra/libvirt" "reflect-metadata" "rxjs" "fastify" "@nestjs/core" "nest-commander"; do
+            if [ -d "node_modules/$pkg" ]; then
+              if [ -L "node_modules/$pkg" ]; then
+                echo "SYMLINK (resolving): $pkg"
+                REAL_PATH=$(readlink -f "node_modules/$pkg")
+                rm "node_modules/$pkg"
+                cp -rL "$REAL_PATH" "node_modules/$pkg"
               else
                 echo "OK: $pkg"
               fi
             else
               echo "MISSING: $pkg"
+              exit 1
             fi
           done
+          echo "All key packages verified."
+          echo "Total packages: $(ls node_modules/ | wc -l)"
 
       # ── 7. 下载 libvirt 预编译二进制 ──
       - name: Download libvirt prebuilt binary
         run: |
-          LIBVIRT_DIR="api/node_modules/@vectra/libvirt/build/Release"
+          LIBVIRT_DIR="node_modules/@vectra/libvirt/build/Release"
           mkdir -p "$LIBVIRT_DIR"
 
           DOWNLOAD_URL="https://github.com/${{ env.LIBVIRT_REPO }}/releases/download/${{ env.LIBVIRT_TAG }}/${{ env.LIBVIRT_FILENAME }}"
@@ -126,11 +126,9 @@ jobs:
           echo "Downloading libvirt from: $DOWNLOAD_URL"
           curl -fSL "$DOWNLOAD_URL" -o /tmp/libvirt-prebuilt.tar.gz
 
-          # 解压到 @vectra/libvirt 目录
-          tar -xzf /tmp/libvirt-prebuilt.tar.gz -C "api/node_modules/@vectra/libvirt/"
+          tar -xzf /tmp/libvirt-prebuilt.tar.gz -C "node_modules/@vectra/libvirt/"
           rm /tmp/libvirt-prebuilt.tar.gz
 
-          # 验证
           if [ ! -f "$LIBVIRT_DIR/libvirt.node" ]; then
             echo "Error: libvirt.node not found after extraction"
             exit 1
@@ -142,9 +140,8 @@ jobs:
       # ── 8. 清理不需要的文件（减小体积）──
       - name: Clean unnecessary files
         run: |
-          cd api/node_modules
+          cd node_modules
 
-          # 删除 TypeScript 源码、测试、文档等
           find . -type d -name "__tests__" -exec rm -rf {} + 2>/dev/null || true
           find . -type d -name "test" -not -path "*/node_modules/test" -exec rm -rf {} + 2>/dev/null || true
           find . -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
@@ -158,14 +155,14 @@ jobs:
           find . -type f -name "tsconfig*.json" -delete 2>/dev/null || true
 
           echo "Cleanup complete"
+          du -sh .
 
       # ── 9. 打包 ──
+      # 从根级 node_modules/ 打包，部署时解压到 /usr/local/vectra-api/
       - name: Create vendor archive
         run: |
           ARCHIVE="${{ steps.version.outputs.archive_name }}"
-          cd api
-          XZ_OPT='-5 -T0' tar -cJf "../${ARCHIVE}" node_modules
-          cd ..
+          XZ_OPT='-5 -T0' tar -cJf "${ARCHIVE}" node_modules
           ls -lh "$ARCHIVE"
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
           cat "${ARCHIVE}.sha256"
@@ -184,14 +181,13 @@ jobs:
             **libvirt**: ${{ env.LIBVIRT_TAG }}
 
             ### 包含内容
-            - 所有运行时 npm 依赖（production only）
-            - `@vectra/shared` workspace 包（已解析）
+            - 所有运行时 npm 依赖（production only, hoisted flat）
+            - `@vectra/shared` workspace 包
             - `@vectra/libvirt` 预编译 native addon（node-v127-linux-x64）
             - 已清理测试/文档/sourcemap 等非必要文件
 
             ### 使用方式
             ```bash
-            # 下载并解压到 /usr/local/vectra-api/
             tar -xJf ${{ steps.version.outputs.archive_name }} -C /usr/local/vectra-api/
             ```
           files: |
