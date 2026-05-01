@@ -26,17 +26,21 @@ on:
       api_version:
         description: 'API version (e.g. 4.30.0)'
         required: true
-      libvirt_version:
-        description: 'Libvirt prebuilt version tag (e.g. v2.2.1-custom.1)'
+      libvirt_tag:
+        description: 'Libvirt release tag (e.g. v2.2.1-custom.1)'
         required: true
         default: 'v2.2.1-custom.1'
+      libvirt_filename:
+        description: 'Libvirt asset filename (e.g. libvirt-v2.2.1-node-v127-linux-x64.tar.gz)'
+        required: true
+        default: 'libvirt-v2.2.1-node-v127-linux-x64.tar.gz'
 
 env:
   NODE_VERSION: '22.18.0'
   PNPM_VERSION: '10.15.0'
   LIBVIRT_REPO: 'Green3785/libvirt'
-  # tag 触发时从 tag 名提取版本；手动触发时使用输入值
-  LIBVIRT_TAG: ${{ github.event.inputs.libvirt_version || 'v2.2.1-custom.1' }}
+  LIBVIRT_TAG: ${{ github.event.inputs.libvirt_tag || 'v2.2.1-custom.1' }}
+  LIBVIRT_FILENAME: ${{ github.event.inputs.libvirt_filename || 'libvirt-v2.2.1-node-v127-linux-x64.tar.gz' }}
 
 jobs:
   build-vendor:
@@ -128,7 +132,7 @@ jobs:
           LIBVIRT_DIR="api/node_modules/@vectra/libvirt/build/Release"
           mkdir -p "$LIBVIRT_DIR"
 
-          DOWNLOAD_URL="https://github.com/${{ env.LIBVIRT_REPO }}/releases/download/${{ env.LIBVIRT_TAG }}/libvirt-${LIBVIRT_TAG#v}-node-v127-linux-x64.tar.gz"
+          DOWNLOAD_URL="https://github.com/${{ env.LIBVIRT_REPO }}/releases/download/${{ env.LIBVIRT_TAG }}/${{ env.LIBVIRT_FILENAME }}"
 
           echo "Downloading libvirt from: $DOWNLOAD_URL"
           curl -fSL "$DOWNLOAD_URL" -o /tmp/libvirt-prebuilt.tar.gz
@@ -145,8 +149,6 @@ jobs:
 
           ls -la "$LIBVIRT_DIR/libvirt.node"
           echo "libvirt.node installed successfully"
-        env:
-          LIBVIRT_TAG: ${{ env.LIBVIRT_TAG }}
 
       # ── 8. 清理不需要的文件（减小体积）──
       - name: Clean unnecessary files
